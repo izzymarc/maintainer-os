@@ -2,7 +2,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from maintainer_os.main import app
+from maintainer_os.main import app, store
 
 
 @pytest_asyncio.fixture
@@ -10,6 +10,13 @@ async def client() -> httpx.AsyncClient:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_store() -> None:
+    store.reset()
+    yield
+    store.reset()
 
 
 @pytest.mark.asyncio
@@ -24,4 +31,46 @@ async def test_health(client: httpx.AsyncClient) -> None:
 async def test_capabilities_are_explicit(client: httpx.AsyncClient) -> None:
     response = await client.get("/api/v1/capabilities")
     assert response.status_code == 200
-    assert "repositories" in response.json()["planned"]
+    assert "repositories" in response.json()["available"]
+
+
+@pytest.mark.asyncio
+async def test_repository_and_workflow_run_lifecycle(client: httpx.AsyncClient) -> None:
+    repository_response = await client.post(
+        "/api/v1/repositories",
+        json={
+            "full_name": "izzymarc/example",
+            "clone_url": "https://github.com/izzymarc/example.git",
+            "default_branch": "main",
+        },
+    )
+    assert repository_response.status_code == 201
+    repository = repository_response.json()
+
+    run_response = await client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "repository_id": repository["id"],
+            "workflow_type": "review",
+            "requested_by": "maintainer@example.com",
+        },
+    )
+    assert run_response.status_code == 201
+    assert run_response.json()["status"] == "queued"
+
+    fetched_response = await client.get(f"/api/v1/workflow-runs/{run_response.json()['id']}")
+    assert fetched_response.status_code == 200
+    assert fetched_response.json()["repository_id"] == repository["id"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_requires_existing_repository(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "repository_id": "00000000-0000-0000-0000-000000000000",
+            "workflow_type": "review",
+            "requested_by": "maintainer@example.com",
+        },
+    )
+    assert response.status_code == 404
