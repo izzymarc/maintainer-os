@@ -40,6 +40,24 @@ async def test_capabilities_are_explicit(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_policy_evaluation_has_safe_defaults(client: httpx.AsyncClient) -> None:
+    payload = {
+        "repository_id": "00000000-0000-0000-0000-000000000001",
+        "workflow_type": "review",
+        "ref": "main",
+        "requested_by": "maintainer@example.com",
+    }
+    response = await client.post("/api/v1/policies/evaluate", json=payload)
+    assert response.status_code == 200
+    assert response.json()["allowed"] is False
+    assert "protected refs" in response.json()["reasons"][0]
+
+    safe_payload = {**payload, "ref": "feature/safe-review"}
+    safe_response = await client.post("/api/v1/policies/evaluate", json=safe_payload)
+    assert safe_response.json() == {"allowed": True, "reasons": [], "policy_version": "v1"}
+
+
+@pytest.mark.asyncio
 async def test_repository_and_workflow_run_lifecycle(client: httpx.AsyncClient) -> None:
     repository_response = await client.post(
         "/api/v1/repositories",
@@ -57,6 +75,7 @@ async def test_repository_and_workflow_run_lifecycle(client: httpx.AsyncClient) 
         json={
             "repository_id": repository["id"],
             "workflow_type": "review",
+            "ref": "feature/review",
             "requested_by": "maintainer@example.com",
         },
     )
@@ -72,11 +91,13 @@ async def test_repository_and_workflow_run_lifecycle(client: httpx.AsyncClient) 
     events = audit_response.json()
     assert [event["action"] for event in events] == [
         "repository.created",
+        "workflow_run.policy_evaluated",
         "workflow_run.created",
     ]
-    assert events[1]["actor_id"] == "maintainer@example.com"
+    assert events[2]["actor_id"] == "maintainer@example.com"
     assert events[0]["correlation_id"] != "00000000-0000-0000-0000-000000000000"
-    assert events[1]["correlation_id"] != events[0]["correlation_id"]
+    assert events[1]["metadata"]["allowed"] == "true"
+    assert events[2]["correlation_id"] != events[0]["correlation_id"]
 
 
 @pytest.mark.asyncio
@@ -95,6 +116,7 @@ async def test_approval_is_explicit_and_audited(client: httpx.AsyncClient) -> No
         json={
             "repository_id": repository["id"],
             "workflow_type": "test_generation",
+            "ref": "feature/tests",
             "requested_by": "agent@example.com",
         },
     )
@@ -122,6 +144,32 @@ async def test_approval_is_explicit_and_audited(client: httpx.AsyncClient) -> No
     assert events[-1]["action"] == "workflow_run.approved"
     assert events[-1]["actor_id"] == "reviewer@example.com"
     assert events[-1]["correlation_id"] == "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.mark.asyncio
+async def test_protected_workflow_is_blocked_and_audited(client: httpx.AsyncClient) -> None:
+    repository_response = await client.post(
+        "/api/v1/repositories",
+        json={
+            "full_name": "izzymarc/policy-example",
+            "clone_url": "https://github.com/izzymarc/policy-example.git",
+        },
+    )
+    repository = repository_response.json()
+    response = await client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "repository_id": repository["id"],
+            "workflow_type": "review",
+            "ref": "main",
+            "requested_by": "maintainer@example.com",
+        },
+    )
+    assert response.status_code == 403
+    assert "protected refs" in response.json()["detail"]["policy"]["reasons"][0]
+    events = (await client.get("/api/v1/audit-events")).json()
+    assert events[-1]["action"] == "workflow_run.policy_evaluated"
+    assert events[-1]["metadata"]["allowed"] == "false"
 
 
 @pytest.mark.asyncio

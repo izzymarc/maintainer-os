@@ -13,6 +13,7 @@ from .domain import (
     AuditEvent,
     InMemoryStore,
     Repository,
+    PolicyDecision,
     RepositoryCreate,
     WorkflowApproval,
     WorkflowRun,
@@ -86,12 +87,31 @@ async def list_repositories() -> list[Repository]:
 
 
 @app.post(
+    f"{settings.api_prefix}/policies/evaluate",
+    response_model=PolicyDecision,
+    tags=["policies"],
+)
+async def evaluate_policy(payload: WorkflowRunCreate) -> PolicyDecision:
+    return store.evaluate_policy(payload)
+
+
+@app.post(
     f"{settings.api_prefix}/workflow-runs",
     response_model=WorkflowRun,
     status_code=status.HTTP_201_CREATED,
     tags=["workflow-runs"],
 )
 async def create_workflow_run(request: Request, payload: WorkflowRunCreate) -> WorkflowRun:
+    if payload.repository_id not in store.repositories:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    decision = store.evaluate_policy(payload)
+    store.record_policy_decision(
+        payload=payload,
+        decision=decision,
+        correlation_id=request.state.correlation_id,
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail={"policy": decision.model_dump()})
     run = store.add_run(payload, correlation_id=request.state.correlation_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Repository not found")

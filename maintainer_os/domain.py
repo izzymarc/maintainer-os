@@ -45,6 +45,12 @@ class WorkflowApproval(BaseModel):
     approved_by: str = Field(min_length=1, max_length=255)
 
 
+class PolicyDecision(BaseModel):
+    allowed: bool
+    reasons: list[str] = Field(default_factory=list)
+    policy_version: str = "v1"
+
+
 class AuditEvent(BaseModel):
     id: UUID
     action: str
@@ -102,6 +108,36 @@ class InMemoryStore:
             metadata={"full_name": repository.full_name},
         )
         return repository
+
+    def evaluate_policy(self, payload: WorkflowRunCreate) -> PolicyDecision:
+        reasons: list[str] = []
+        if payload.ref in {"main", "master", "production"}:
+            reasons.append("protected refs require an explicit policy exception")
+        if payload.requested_by == "anonymous":
+            reasons.append("anonymous actors cannot start workflows")
+        return PolicyDecision(allowed=not reasons, reasons=reasons)
+
+    def record_policy_decision(
+        self,
+        *,
+        payload: WorkflowRunCreate,
+        decision: PolicyDecision,
+        correlation_id: UUID,
+    ) -> AuditEvent:
+        return self.record_event(
+            action="workflow_run.policy_evaluated",
+            resource_type="repository",
+            resource_id=payload.repository_id,
+            actor_id=payload.requested_by,
+            correlation_id=correlation_id,
+            metadata={
+                "allowed": str(decision.allowed).lower(),
+                "policy_version": decision.policy_version,
+                "reasons": "; ".join(decision.reasons),
+                "workflow_type": payload.workflow_type.value,
+                "ref": payload.ref,
+            },
+        )
 
     def add_run(self, payload: WorkflowRunCreate, *, correlation_id: UUID) -> WorkflowRun | None:
         if payload.repository_id not in self.repositories:
