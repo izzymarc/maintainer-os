@@ -62,6 +62,17 @@ async def test_repository_and_workflow_run_lifecycle(client: httpx.AsyncClient) 
     assert fetched_response.status_code == 200
     assert fetched_response.json()["repository_id"] == repository["id"]
 
+    audit_response = await client.get("/api/v1/audit-events")
+    assert audit_response.status_code == 200
+    events = audit_response.json()
+    assert [event["action"] for event in events] == [
+        "repository.created",
+        "workflow_run.created",
+    ]
+    assert events[1]["actor_id"] == "maintainer@example.com"
+    assert events[0]["correlation_id"] != "00000000-0000-0000-0000-000000000000"
+    assert events[1]["correlation_id"] != events[0]["correlation_id"]
+
 
 @pytest.mark.asyncio
 async def test_workflow_run_requires_existing_repository(client: httpx.AsyncClient) -> None:

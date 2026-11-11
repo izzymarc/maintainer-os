@@ -4,7 +4,7 @@
 
 MaintainerOS is a self-hosted platform for running safe, auditable maintenance workflows across software repositories. It is designed to help maintainers review changes, generate regression tests, triage issues, and keep documentation current—with explicit human approval before repository mutations.
 
-> Status: early foundation (`0.1.0`). The current release exposes the control-plane health and capability APIs; integrations are intentionally staged behind a documented roadmap.
+> Status: early foundation (`0.1.0`). The current release exposes repository, workflow-run, and audit-event contracts; integrations and persistence are intentionally staged behind a documented roadmap.
 
 ## Design goals
 

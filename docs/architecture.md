@@ -10,7 +10,7 @@ MaintainerOS has five planned subsystems:
 4. **Integration gateway:** GitHub App webhooks and APIs, with provider adapters behind explicit permissions.
 5. **Audit store:** append-only run events, artifacts, approvals, and policy decisions.
 
-The current `0.1.0` implementation contains only the control-plane process and health/capability contracts. This is deliberate: external side effects will not be added until authentication, authorization, idempotency, and audit schemas are tested.
+The current `0.1.0` implementation contains the control-plane process, repository/workflow contracts, and an in-memory audit log. This is deliberate: external side effects will not be added until authentication, authorization, idempotency, and persistent audit schemas are tested.
 
 ## Safety model
 
@@ -24,6 +24,7 @@ The current `0.1.0` implementation contains only the control-plane process and h
 ## Milestones
 
 - [x] Service skeleton, configuration, health contract, and CI
+- [x] In-memory repository, workflow-run, and audit-event contracts
 - [ ] Database migrations for organizations, repositories, policies, and runs
 - [ ] GitHub App installation and signed webhook ingestion
 - [ ] Queue and isolated runner interfaces

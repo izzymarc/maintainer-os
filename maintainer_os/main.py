@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel
@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from . import __version__
 from .config import settings
 from .domain import (
+    AuditEvent,
     InMemoryStore,
     Repository,
     RepositoryCreate,
@@ -50,7 +51,7 @@ async def capabilities() -> dict[str, list[str]]:
     tags=["repositories"],
 )
 async def create_repository(payload: RepositoryCreate) -> Repository:
-    return store.add_repository(payload)
+    return store.add_repository(payload, correlation_id=uuid4())
 
 
 @app.get(
@@ -69,7 +70,7 @@ async def list_repositories() -> list[Repository]:
     tags=["workflow-runs"],
 )
 async def create_workflow_run(payload: WorkflowRunCreate) -> WorkflowRun:
-    run = store.add_run(payload)
+    run = store.add_run(payload, correlation_id=uuid4())
     if run is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     return run
@@ -85,3 +86,12 @@ async def get_workflow_run(run_id: UUID) -> WorkflowRun:
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
     return run
+
+
+@app.get(
+    f"{settings.api_prefix}/audit-events",
+    response_model=list[AuditEvent],
+    tags=["audit"],
+)
+async def list_audit_events() -> list[AuditEvent]:
+    return list(store.audit_events)
