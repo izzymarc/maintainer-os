@@ -1,6 +1,11 @@
+import hashlib
+import hmac
+
 import httpx
 import pytest
 import pytest_asyncio
+
+from maintainer_os.config import settings
 
 from maintainer_os.main import app, store
 
@@ -117,6 +122,46 @@ async def test_approval_is_explicit_and_audited(client: httpx.AsyncClient) -> No
     assert events[-1]["action"] == "workflow_run.approved"
     assert events[-1]["actor_id"] == "reviewer@example.com"
     assert events[-1]["correlation_id"] == "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_requires_valid_signature_and_deduplicates(
+    client: httpx.AsyncClient,
+) -> None:
+    body = b'{"action":"opened"}'
+    signature = "sha256=" + hmac.new(
+        settings.github_webhook_secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    headers = {
+        "X-GitHub-Delivery": "delivery-123",
+        "X-GitHub-Event": "issues",
+        "X-Hub-Signature-256": signature,
+    }
+
+    accepted = await client.post("/webhooks/github", content=body, headers=headers)
+    assert accepted.status_code == 202
+    assert accepted.json()["delivery_id"] == "delivery-123"
+
+    duplicate = await client.post("/webhooks/github", content=body, headers=headers)
+    assert duplicate.status_code == 409
+
+    events = (await client.get("/api/v1/audit-events")).json()
+    assert events[-1]["action"] == "github_webhook.accepted"
+    assert events[-1]["metadata"] == {"delivery_id": "delivery-123", "event": "issues"}
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_rejects_invalid_signature(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/webhooks/github",
+        content=b"{}",
+        headers={
+            "X-GitHub-Delivery": "delivery-invalid",
+            "X-GitHub-Event": "push",
+            "X-Hub-Signature-256": "sha256=invalid",
+        },
+    )
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

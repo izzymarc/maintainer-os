@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import StrEnum
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -65,6 +65,7 @@ class InMemoryStore:
         self.repositories: dict[UUID, Repository] = {}
         self.runs: dict[UUID, WorkflowRun] = {}
         self.audit_events: list[AuditEvent] = []
+        self.github_deliveries: set[str] = set()
 
     def record_event(
         self,
@@ -137,7 +138,27 @@ class InMemoryStore:
         )
         return run
 
+    def accept_github_delivery(
+        self,
+        *,
+        delivery_id: str,
+        event_name: str,
+        correlation_id: UUID,
+    ) -> AuditEvent | None:
+        if delivery_id in self.github_deliveries:
+            return None
+        self.github_deliveries.add(delivery_id)
+        return self.record_event(
+            action="github_webhook.accepted",
+            resource_type="github_delivery",
+            resource_id=uuid5(NAMESPACE_URL, f"github-delivery:{delivery_id}"),
+            actor_id="github",
+            correlation_id=correlation_id,
+            metadata={"delivery_id": delivery_id, "event": event_name},
+        )
+
     def reset(self) -> None:
         self.repositories.clear()
         self.runs.clear()
         self.audit_events.clear()
+        self.github_deliveries.clear()

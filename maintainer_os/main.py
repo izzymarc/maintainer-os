@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -58,8 +61,8 @@ async def health() -> HealthResponse:
 @app.get(f"{settings.api_prefix}/capabilities", tags=["system"])
 async def capabilities() -> dict[str, list[str]]:
     return {
-        "available": ["health", "repositories", "workflow-runs"],
-        "planned": ["webhooks", "audit-events", "persistent-storage"],
+        "available": ["health", "repositories", "workflow-runs", "github-webhooks"],
+        "planned": ["audit-events", "persistent-storage"],
     }
 
 
@@ -123,6 +126,27 @@ async def get_workflow_run(run_id: UUID) -> WorkflowRun:
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
     return run
+
+
+@app.post("/webhooks/github", status_code=status.HTTP_202_ACCEPTED, tags=["webhooks"])
+async def github_webhook(request: Request) -> dict[str, str]:
+    delivery_id = request.headers.get("X-GitHub-Delivery", "").strip()
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    event_name = request.headers.get("X-GitHub-Event", "unknown").strip() or "unknown"
+    body = await request.body()
+    expected = "sha256=" + hmac.new(
+        settings.github_webhook_secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    if not delivery_id or not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid GitHub webhook signature")
+    event = store.accept_github_delivery(
+        delivery_id=delivery_id,
+        event_name=event_name,
+        correlation_id=request.state.correlation_id,
+    )
+    if event is None:
+        raise HTTPException(status_code=409, detail="GitHub delivery already processed")
+    return {"status": "accepted", "delivery_id": delivery_id}
 
 
 @app.get(
