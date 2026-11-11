@@ -1,6 +1,7 @@
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 
 from . import __version__
@@ -10,6 +11,7 @@ from .domain import (
     InMemoryStore,
     Repository,
     RepositoryCreate,
+    WorkflowApproval,
     WorkflowRun,
     WorkflowRunCreate,
 )
@@ -24,6 +26,23 @@ class HealthResponse(BaseModel):
 
 app = FastAPI(title=settings.app_name, version=__version__)
 store = InMemoryStore()
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        raw_correlation_id = request.headers.get("X-Correlation-ID")
+        try:
+            correlation_id = UUID(raw_correlation_id) if raw_correlation_id else uuid4()
+        except ValueError:
+            correlation_id = uuid4()
+        request.state.correlation_id = correlation_id
+        request.state.actor_id = request.headers.get("X-Actor-ID", "anonymous")
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = str(correlation_id)
+        return response
+
+
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
@@ -50,8 +69,8 @@ async def capabilities() -> dict[str, list[str]]:
     status_code=status.HTTP_201_CREATED,
     tags=["repositories"],
 )
-async def create_repository(payload: RepositoryCreate) -> Repository:
-    return store.add_repository(payload, correlation_id=uuid4())
+async def create_repository(request: Request, payload: RepositoryCreate) -> Repository:
+    return store.add_repository(payload, correlation_id=request.state.correlation_id)
 
 
 @app.get(
@@ -69,10 +88,28 @@ async def list_repositories() -> list[Repository]:
     status_code=status.HTTP_201_CREATED,
     tags=["workflow-runs"],
 )
-async def create_workflow_run(payload: WorkflowRunCreate) -> WorkflowRun:
-    run = store.add_run(payload, correlation_id=uuid4())
+async def create_workflow_run(request: Request, payload: WorkflowRunCreate) -> WorkflowRun:
+    run = store.add_run(payload, correlation_id=request.state.correlation_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Repository not found")
+    return run
+
+
+@app.post(
+    f"{settings.api_prefix}/workflow-runs/{{run_id}}/approve",
+    response_model=WorkflowRun,
+    tags=["workflow-runs"],
+)
+async def approve_workflow_run(
+    request: Request, run_id: UUID, payload: WorkflowApproval
+) -> WorkflowRun:
+    run = store.approve_run(
+        run_id,
+        actor_id=payload.approved_by,
+        correlation_id=request.state.correlation_id,
+    )
+    if run is None:
+        raise HTTPException(status_code=409, detail="Workflow run is missing or not approvable")
     return run
 
 

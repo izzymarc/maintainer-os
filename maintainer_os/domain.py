@@ -14,6 +14,7 @@ class WorkflowType(StrEnum):
 class WorkflowStatus(StrEnum):
     QUEUED = "queued"
     AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
 
 
 class RepositoryCreate(BaseModel):
@@ -38,6 +39,10 @@ class WorkflowRun(WorkflowRunCreate):
     id: UUID
     status: WorkflowStatus
     created_at: datetime
+
+
+class WorkflowApproval(BaseModel):
+    approved_by: str = Field(min_length=1, max_length=255)
 
 
 class AuditEvent(BaseModel):
@@ -114,6 +119,21 @@ class InMemoryStore:
             actor_id=run.requested_by,
             correlation_id=correlation_id,
             metadata={"workflow_type": run.workflow_type.value, "status": run.status.value},
+        )
+        return run
+
+    def approve_run(self, run_id: UUID, *, actor_id: str, correlation_id: UUID) -> WorkflowRun | None:
+        run = self.runs.get(run_id)
+        if run is None or run.status is not WorkflowStatus.QUEUED:
+            return None
+        run.status = WorkflowStatus.APPROVED
+        self.record_event(
+            action="workflow_run.approved",
+            resource_type="workflow_run",
+            resource_id=run.id,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            metadata={"status": run.status.value},
         )
         return run
 

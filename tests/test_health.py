@@ -75,6 +75,51 @@ async def test_repository_and_workflow_run_lifecycle(client: httpx.AsyncClient) 
 
 
 @pytest.mark.asyncio
+async def test_approval_is_explicit_and_audited(client: httpx.AsyncClient) -> None:
+    repository_response = await client.post(
+        "/api/v1/repositories",
+        headers={"X-Correlation-ID": "11111111-1111-1111-1111-111111111111"},
+        json={
+            "full_name": "izzymarc/approval-example",
+            "clone_url": "https://github.com/izzymarc/approval-example.git",
+        },
+    )
+    repository = repository_response.json()
+    run_response = await client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "repository_id": repository["id"],
+            "workflow_type": "test_generation",
+            "requested_by": "agent@example.com",
+        },
+    )
+    run_id = run_response.json()["id"]
+
+    approval_response = await client.post(
+        f"/api/v1/workflow-runs/{run_id}/approve",
+        headers={
+            "X-Correlation-ID": "22222222-2222-2222-2222-222222222222",
+        },
+        json={"approved_by": "reviewer@example.com"},
+    )
+    assert approval_response.status_code == 200
+    assert approval_response.headers["X-Correlation-ID"] == "22222222-2222-2222-2222-222222222222"
+    assert approval_response.json()["status"] == "approved"
+
+    repeat_response = await client.post(
+        f"/api/v1/workflow-runs/{run_id}/approve",
+        json={"approved_by": "reviewer@example.com"},
+    )
+    assert repeat_response.status_code == 409
+
+    audit_response = await client.get("/api/v1/audit-events")
+    events = audit_response.json()
+    assert events[-1]["action"] == "workflow_run.approved"
+    assert events[-1]["actor_id"] == "reviewer@example.com"
+    assert events[-1]["correlation_id"] == "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.mark.asyncio
 async def test_workflow_run_requires_existing_repository(client: httpx.AsyncClient) -> None:
     response = await client.post(
         "/api/v1/workflow-runs",
