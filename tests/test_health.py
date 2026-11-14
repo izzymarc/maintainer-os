@@ -223,3 +223,25 @@ async def test_workflow_run_requires_existing_repository(client: httpx.AsyncClie
         },
     )
     assert response.status_code == 404
+
+
+def test_sqlite_store_survives_restart(tmp_path) -> None:
+    from uuid import uuid4
+
+    from maintainer_os.domain import RepositoryCreate, SQLiteStore
+
+    database_path = tmp_path / "maintainer-os.db"
+    first = SQLiteStore(str(database_path))
+    repository = first.add_repository(
+        RepositoryCreate(
+            full_name="izzymarc/durable-example",
+            clone_url="https://github.com/izzymarc/durable-example.git",
+        ),
+        correlation_id=uuid4(),
+    )
+    first.close()
+
+    second = SQLiteStore(str(database_path))
+    assert repository.id in second.repositories
+    assert second.repositories[repository.id].full_name == "izzymarc/durable-example"
+    second.close()

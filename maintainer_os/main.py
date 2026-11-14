@@ -12,6 +12,7 @@ from .config import settings
 from .domain import (
     AuditEvent,
     InMemoryStore,
+    SQLiteStore,
     Repository,
     PolicyDecision,
     RepositoryCreate,
@@ -29,7 +30,7 @@ class HealthResponse(BaseModel):
 
 
 app = FastAPI(title=settings.app_name, version=__version__)
-store = InMemoryStore()
+store = SQLiteStore(settings.sqlite_path) if settings.storage == "sqlite" else InMemoryStore()
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

@@ -25,6 +25,7 @@ The current `0.1.0` implementation contains the control-plane process, repositor
 
 - [x] Service skeleton, configuration, health contract, and CI
 - [x] In-memory repository, workflow-run, and audit-event contracts
+- [x] Durable SQLite schema for repositories, workflow runs, audit events, and deliveries
 - [ ] Database migrations for organizations, repositories, policies, and runs
 - [ ] GitHub App installation and signed webhook ingestion
 - [ ] Queue and isolated runner interfaces

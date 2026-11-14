@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://maintainer:maintainer@localhost:5432/maintainer"
     redis_url: str = "redis://localhost:6379/0"
     github_webhook_secret: str = "development-only-change-me"
+    storage: str = "memory"
+    sqlite_path: str = "maintainer_os.db"
     model_config = SettingsConfigDict(env_file=".env", env_prefix="MAINTAINEROS_")
 
 

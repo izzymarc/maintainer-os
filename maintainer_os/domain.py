@@ -1,5 +1,8 @@
+import json
+import sqlite3
 from datetime import datetime, timezone
 from enum import StrEnum
+from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -198,3 +201,123 @@ class InMemoryStore:
         self.runs.clear()
         self.audit_events.clear()
         self.github_deliveries.clear()
+
+
+class SQLiteStore(InMemoryStore):
+    """Durable store for single-process deployments and local development."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.connection = sqlite3.connect(self.path)
+        self.connection.row_factory = sqlite3.Row
+        self._create_schema()
+        self._load()
+
+    def _create_schema(self) -> None:
+        self.connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS repositories (
+                id TEXT PRIMARY KEY, full_name TEXT NOT NULL, clone_url TEXT NOT NULL,
+                default_branch TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY, repository_id TEXT NOT NULL, workflow_type TEXT NOT NULL,
+                ref TEXT NOT NULL, requested_by TEXT NOT NULL, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, FOREIGN KEY(repository_id) REFERENCES repositories(id)
+            );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY, action TEXT NOT NULL, resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL, actor_id TEXT NOT NULL, correlation_id TEXT NOT NULL,
+                created_at TEXT NOT NULL, metadata TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS github_deliveries (
+                delivery_id TEXT PRIMARY KEY
+            );
+            """
+        )
+        self.connection.commit()
+
+    def _load(self) -> None:
+        for row in self.connection.execute("SELECT * FROM repositories"):
+            repository = Repository(
+                id=UUID(row["id"]), full_name=row["full_name"], clone_url=row["clone_url"],
+                default_branch=row["default_branch"], created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            self.repositories[repository.id] = repository
+        for row in self.connection.execute("SELECT * FROM workflow_runs"):
+            run = WorkflowRun(
+                id=UUID(row["id"]), repository_id=UUID(row["repository_id"]),
+                workflow_type=row["workflow_type"], ref=row["ref"], requested_by=row["requested_by"],
+                status=row["status"], created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            self.runs[run.id] = run
+        for row in self.connection.execute("SELECT * FROM audit_events ORDER BY rowid"):
+            self.audit_events.append(
+                AuditEvent(
+                    id=UUID(row["id"]), action=row["action"], resource_type=row["resource_type"],
+                    resource_id=UUID(row["resource_id"]), actor_id=row["actor_id"],
+                    correlation_id=UUID(row["correlation_id"]), created_at=datetime.fromisoformat(row["created_at"]),
+                    metadata=json.loads(row["metadata"]),
+                )
+            )
+        self.github_deliveries = {
+            row["delivery_id"] for row in self.connection.execute("SELECT delivery_id FROM github_deliveries")
+        }
+
+    def record_event(self, **kwargs):
+        event = super().record_event(**kwargs)
+        self.connection.execute(
+            "INSERT OR IGNORE INTO audit_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(event.id), event.action, event.resource_type, str(event.resource_id), event.actor_id,
+             str(event.correlation_id), event.created_at.isoformat(), json.dumps(event.metadata, sort_keys=True)),
+        )
+        self.connection.commit()
+        return event
+
+    def add_repository(self, payload: RepositoryCreate, *, correlation_id: UUID) -> Repository:
+        repository = super().add_repository(payload, correlation_id=correlation_id)
+        self.connection.execute(
+            "INSERT OR REPLACE INTO repositories VALUES (?, ?, ?, ?, ?)",
+            (str(repository.id), repository.full_name, str(repository.clone_url), repository.default_branch,
+             repository.created_at.isoformat()),
+        )
+        self.connection.commit()
+        return repository
+
+    def add_run(self, payload: WorkflowRunCreate, *, correlation_id: UUID) -> WorkflowRun | None:
+        run = super().add_run(payload, correlation_id=correlation_id)
+        if run:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO workflow_runs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(run.id), str(run.repository_id), run.workflow_type.value, run.ref, run.requested_by,
+                 run.status.value, run.created_at.isoformat()),
+            )
+            self.connection.commit()
+        return run
+
+    def approve_run(self, run_id: UUID, *, actor_id: str, correlation_id: UUID) -> WorkflowRun | None:
+        run = super().approve_run(run_id, actor_id=actor_id, correlation_id=correlation_id)
+        if run:
+            self.connection.execute("UPDATE workflow_runs SET status = ? WHERE id = ?", (run.status.value, str(run.id)))
+            self.connection.commit()
+        return run
+
+    def accept_github_delivery(self, *, delivery_id: str, event_name: str, correlation_id: UUID) -> AuditEvent | None:
+        event = super().accept_github_delivery(
+            delivery_id=delivery_id, event_name=event_name, correlation_id=correlation_id
+        )
+        if event:
+            self.connection.execute("INSERT OR IGNORE INTO github_deliveries VALUES (?)", (delivery_id,))
+            self.connection.commit()
+        return event
+
+    def reset(self) -> None:
+        super().reset()
+        self.connection.executescript(
+            "DELETE FROM repositories; DELETE FROM workflow_runs; DELETE FROM audit_events; DELETE FROM github_deliveries;"
+        )
+        self.connection.commit()
+
+    def close(self) -> None:
+        self.connection.close()
