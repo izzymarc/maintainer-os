@@ -54,6 +54,16 @@ class PolicyDecision(BaseModel):
     policy_version: str = "v1"
 
 
+class WorkerResult(BaseModel):
+    run_id: UUID
+    status: str
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    output_truncated: bool = False
+
+
 class AuditEvent(BaseModel):
     id: UUID
     action: str

@@ -225,6 +225,60 @@ async def test_workflow_run_requires_existing_repository(client: httpx.AsyncClie
     assert response.status_code == 404
 
 
+def test_worker_requires_approval_and_runs_fixed_profile(tmp_path) -> None:
+    from uuid import uuid4
+
+    from maintainer_os.domain import WorkflowRun, WorkflowStatus, WorkflowType
+    from maintainer_os.runner import LocalWorker, WorkerError
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    run = WorkflowRun(
+        id=uuid4(),
+        repository_id=uuid4(),
+        workflow_type=WorkflowType.REVIEW,
+        ref="feature/safe",
+        requested_by="maintainer@example.com",
+        status=WorkflowStatus.QUEUED,
+        created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
+    worker = LocalWorker(timeout_seconds=10)
+    with pytest.raises(WorkerError, match="approved"):
+        worker.execute(run, workspace)
+
+    run.status = WorkflowStatus.APPROVED
+    result = worker.execute(run, workspace)
+    assert result.status == "succeeded"
+    assert result.exit_code == 0
+
+
+def test_worker_times_out_and_caps_output(tmp_path) -> None:
+    import sys
+    from uuid import uuid4
+
+    from maintainer_os.domain import WorkflowRun, WorkflowStatus, WorkflowType
+    from maintainer_os.runner import LocalWorker
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    run = WorkflowRun(
+        id=uuid4(),
+        repository_id=uuid4(),
+        workflow_type=WorkflowType.TEST_GENERATION,
+        ref="feature/tests",
+        requested_by="maintainer@example.com",
+        status=WorkflowStatus.APPROVED,
+        created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
+    worker = LocalWorker(timeout_seconds=1, max_output_bytes=8)
+    worker.COMMANDS["test_generation"] = (sys.executable, "-c", "import time; time.sleep(2)")
+    result = worker.execute(run, workspace)
+    assert result.status == "timed_out"
+    assert result.timed_out is True
+    assert len(result.stdout.encode()) <= 8
+    assert len(result.stderr.encode()) <= 8
+
+
 def test_sqlite_store_survives_restart(tmp_path) -> None:
     from uuid import uuid4
 

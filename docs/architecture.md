@@ -28,6 +28,7 @@ The current `0.1.0` implementation contains the control-plane process, repositor
 - [x] Durable SQLite schema for repositories, workflow runs, audit events, and deliveries
 - [ ] Database migrations for organizations, repositories, policies, and runs
 - [ ] GitHub App installation and signed webhook ingestion
+- [x] Fixed-profile local worker interface with approval and output limits
 - [ ] Queue and isolated runner interfaces
 - [ ] Review and test-generation workflows with approval gates
 - [ ] Audit event export and operator dashboard
