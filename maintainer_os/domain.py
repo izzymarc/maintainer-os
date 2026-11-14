@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -51,6 +51,13 @@ class WorkflowApproval(BaseModel):
 
 class WorkerClaim(BaseModel):
     worker_id: str = Field(min_length=1, max_length=255)
+    lease_seconds: int = Field(default=300, ge=1, le=3600)
+
+
+class WorkerLease(BaseModel):
+    run_id: UUID
+    worker_id: str
+    expires_at: datetime
 
 
 class PolicyDecision(BaseModel):
@@ -91,7 +98,7 @@ class InMemoryStore:
         self.audit_events: list[AuditEvent] = []
         self.github_deliveries: set[str] = set()
         self.worker_results: dict[UUID, WorkerResult] = {}
-        self.worker_claims: dict[UUID, str] = {}
+        self.worker_claims: dict[UUID, WorkerLease] = {}
 
     def record_event(
         self,
@@ -194,11 +201,24 @@ class InMemoryStore:
         )
         return run
 
-    def claim_run(self, run_id: UUID, *, worker_id: str, correlation_id: UUID) -> WorkflowRun | None:
+    def claim_run(
+        self, run_id: UUID, *, worker_id: str, lease_seconds: int, correlation_id: UUID
+    ) -> WorkflowRun | None:
         run = self.runs.get(run_id)
-        if run is None or run.status is not WorkflowStatus.APPROVED or run_id in self.worker_claims:
+        existing = self.worker_claims.get(run_id)
+        if existing and existing.expires_at <= now_utc():
+            self.worker_claims.pop(run_id, None)
+            existing = None
+            if run_id in self.runs:
+                self.runs[run_id].status = WorkflowStatus.APPROVED
+        if run is None or run.status is not WorkflowStatus.APPROVED or existing:
             return None
-        self.worker_claims[run_id] = worker_id
+        self.worker_claims[run_id] = WorkerLease(
+            run_id=run_id,
+            worker_id=worker_id,
+            expires_at=now_utc() + timedelta(seconds=lease_seconds),
+        )
+        run.status = WorkflowStatus.CLAIMED
         run.status = WorkflowStatus.CLAIMED
         self.record_event(
             action="workflow_run.claimed",
@@ -206,10 +226,26 @@ class InMemoryStore:
             resource_id=run_id,
             actor_id=worker_id,
             correlation_id=correlation_id,
-            metadata={"worker_id": worker_id, "status": run.status.value},
+            metadata={
+                "worker_id": worker_id,
+                "status": run.status.value,
+                "lease_expires_at": self.worker_claims[run_id].expires_at.isoformat(),
+            },
         )
         return run
 
+    def renew_claim(self, run_id: UUID, *, worker_id: str, lease_seconds: int) -> WorkerLease | None:
+        lease = self.worker_claims.get(run_id)
+        if lease is None or lease.worker_id != worker_id or lease.expires_at <= now_utc():
+            return None
+        lease.expires_at = now_utc() + timedelta(seconds=lease_seconds)
+        return lease
+
+    def active_claim(self, run_id: UUID) -> WorkerLease | None:
+        lease = self.worker_claims.get(run_id)
+        if lease is None or lease.expires_at <= now_utc():
+            return None
+        return lease
 
     def record_worker_result(self, result: WorkerResult, *, correlation_id: UUID) -> WorkerResult:
         if result.run_id in self.worker_results:

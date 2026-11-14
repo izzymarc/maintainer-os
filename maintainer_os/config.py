@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     storage: str = "memory"
     sqlite_path: str = "maintainer_os.db"
     worker_workspace_root: str = "/tmp/maintainer-os-workspaces"
+    worker_lease_seconds: int = 300
     model_config = SettingsConfigDict(env_file=".env", env_prefix="MAINTAINEROS_")
 
 

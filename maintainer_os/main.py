@@ -19,6 +19,7 @@ from .domain import (
     PolicyDecision,
     RepositoryCreate,
     WorkerClaim,
+    WorkerLease,
     WorkflowApproval,
     WorkflowRun,
     WorkflowRunCreate,
@@ -155,11 +156,38 @@ async def claim_workflow_run(
     request: Request, run_id: UUID, payload: WorkerClaim
 ) -> WorkflowRun:
     run = store.claim_run(
-        run_id, worker_id=payload.worker_id, correlation_id=request.state.correlation_id
+        run_id,
+        worker_id=payload.worker_id,
+        lease_seconds=payload.lease_seconds,
+        correlation_id=request.state.correlation_id,
     )
     if run is None:
         raise HTTPException(status_code=409, detail="Workflow run is missing, unapproved, or already claimed")
     return run
+
+
+@app.post(
+    f"{settings.api_prefix}/workflow-runs/{{run_id}}/renew",
+    response_model=WorkerLease,
+    tags=["workflow-runs"],
+)
+async def renew_workflow_claim(
+    request: Request, run_id: UUID, payload: WorkerClaim
+) -> WorkerLease:
+    lease = store.renew_claim(
+        run_id, worker_id=payload.worker_id, lease_seconds=payload.lease_seconds
+    )
+    if lease is None:
+        raise HTTPException(status_code=409, detail="Worker lease is missing, expired, or owned by another worker")
+    store.record_event(
+        action="workflow_run.lease_renewed",
+        resource_type="workflow_run",
+        resource_id=run_id,
+        actor_id=payload.worker_id,
+        correlation_id=request.state.correlation_id,
+        metadata={"lease_expires_at": lease.expires_at.isoformat()},
+    )
+    return lease
 
 
 @app.post(
@@ -181,8 +209,9 @@ async def execute_workflow_run(
         raise HTTPException(status_code=400, detail="Workspace is outside the configured worker root") from error
     if run_id in store.worker_results:
         raise HTTPException(status_code=409, detail="Workflow run has already been executed")
-    if store.worker_claims.get(run_id) != payload.worker_id:
-        raise HTTPException(status_code=409, detail="Workflow run is not claimed by this worker")
+    lease = store.active_claim(run_id)
+    if lease is None or lease.worker_id != payload.worker_id:
+        raise HTTPException(status_code=409, detail="Worker lease is missing or expired")
     try:
         result = LocalWorker().execute(run, workspace)
     except WorkerError as error:

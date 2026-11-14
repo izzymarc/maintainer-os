@@ -44,7 +44,7 @@ docker compose up -d postgres redis
 cp .env.example .env
 ```
 
-By default, the service uses an in-memory store for fast tests. For a durable single-process deployment, set `MAINTAINEROS_STORAGE=sqlite` and configure `MAINTAINEROS_SQLITE_PATH`; the SQLite store persists repositories, workflow runs, audit events, and GitHub delivery deduplication. The fixed-profile local worker is available for development, with single-worker claims and idempotent result retrieval; production execution still requires container/VM isolation.
+By default, the service uses an in-memory store for fast tests. For a durable single-process deployment, set `MAINTAINEROS_STORAGE=sqlite` and configure `MAINTAINEROS_SQLITE_PATH`; the SQLite store persists repositories, workflow runs, audit events, and GitHub delivery deduplication. The fixed-profile local worker is available for development, with single-worker claims, expiring leases, and idempotent result retrieval; production execution still requires container/VM isolation.
 
 ## Architecture
 

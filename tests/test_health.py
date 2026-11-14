@@ -254,10 +254,16 @@ async def test_execution_requires_approval_and_records_result(
     assert approved.status_code == 200
     claimed = await client.post(
         f"/api/v1/workflow-runs/{run['id']}/claim",
-        json={"worker_id": "worker-a"},
+        json={"worker_id": "worker-a", "lease_seconds": 60},
     )
     assert claimed.status_code == 200
     assert claimed.json()["status"] == "claimed"
+    renewed = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/renew",
+        json={"worker_id": "worker-a", "lease_seconds": 60},
+    )
+    assert renewed.status_code == 200
+    assert renewed.json()["worker_id"] == "worker-a"
     executed = await client.post(
         f"/api/v1/workflow-runs/{run['id']}/execute",
         json={"workspace_path": str(workspace), "worker_id": "worker-a"},
@@ -376,3 +382,35 @@ def test_sqlite_store_survives_restart(tmp_path) -> None:
     assert repository.id in second.repositories
     assert second.repositories[repository.id].full_name == "izzymarc/durable-example"
     second.close()
+
+
+def test_expired_worker_lease_can_be_reclaimed() -> None:
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from maintainer_os.domain import InMemoryStore, RepositoryCreate, WorkflowRunCreate
+
+    store = InMemoryStore()
+    repository = store.add_repository(
+        RepositoryCreate(
+            full_name="izzymarc/lease-example",
+            clone_url="https://github.com/izzymarc/lease-example.git",
+        ),
+        correlation_id=uuid4(),
+    )
+    run = store.add_run(
+        WorkflowRunCreate(
+            repository_id=repository.id,
+            workflow_type="review",
+            ref="feature/lease",
+            requested_by="maintainer@example.com",
+        ),
+        correlation_id=uuid4(),
+    )
+    assert run is not None
+    assert store.approve_run(run.id, actor_id="reviewer", correlation_id=uuid4()) is not None
+    assert store.claim_run(run.id, worker_id="worker-a", lease_seconds=1, correlation_id=uuid4()) is not None
+    store.worker_claims[run.id].expires_at -= timedelta(seconds=2)
+    reclaimed = store.claim_run(run.id, worker_id="worker-b", lease_seconds=60, correlation_id=uuid4())
+    assert reclaimed is not None
+    assert store.worker_claims[run.id].worker_id == "worker-b"
