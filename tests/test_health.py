@@ -243,7 +243,7 @@ async def test_execution_requires_approval_and_records_result(
     ).json()
     rejected = await client.post(
         f"/api/v1/workflow-runs/{run['id']}/execute",
-        json={"workspace_path": str(workspace)},
+        json={"workspace_path": str(workspace), "worker_id": "worker-a"},
     )
     assert rejected.status_code == 409
 
@@ -252,9 +252,15 @@ async def test_execution_requires_approval_and_records_result(
         json={"approved_by": "reviewer@example.com"},
     )
     assert approved.status_code == 200
+    claimed = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/claim",
+        json={"worker_id": "worker-a"},
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["status"] == "claimed"
     executed = await client.post(
         f"/api/v1/workflow-runs/{run['id']}/execute",
-        json={"workspace_path": str(workspace)},
+        json={"workspace_path": str(workspace), "worker_id": "worker-a"},
     )
     assert executed.status_code == 200
     assert executed.json()["status"] == "succeeded"
@@ -263,17 +269,22 @@ async def test_execution_requires_approval_and_records_result(
     assert fetched.json()["run_id"] == run["id"]
     duplicate = await client.post(
         f"/api/v1/workflow-runs/{run['id']}/execute",
-        json={"workspace_path": str(workspace)},
+        json={"workspace_path": str(workspace), "worker_id": "worker-a"},
     )
     assert duplicate.status_code == 409
     events = (await client.get("/api/v1/audit-events")).json()
     assert events[-1]["action"] == "workflow_run.executed"
     assert events[-1]["metadata"]["status"] == "succeeded"
     assert "stdout" not in events[-1]["metadata"]
+    second_claim = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/claim",
+        json={"worker_id": "worker-b"},
+    )
+    assert second_claim.status_code == 409
 
     outside = await client.post(
         f"/api/v1/workflow-runs/{run['id']}/execute",
-        json={"workspace_path": str(Path(tmp_path).parent)},
+        json={"workspace_path": str(Path(tmp_path).parent), "worker_id": "worker-a"},
     )
     assert outside.status_code == 400
 
@@ -309,10 +320,10 @@ def test_worker_requires_approval_and_runs_fixed_profile(tmp_path) -> None:
         created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
     )
     worker = LocalWorker(timeout_seconds=10)
-    with pytest.raises(WorkerError, match="approved"):
+    with pytest.raises(WorkerError, match="claimed"):
         worker.execute(run, workspace)
 
-    run.status = WorkflowStatus.APPROVED
+    run.status = WorkflowStatus.CLAIMED
     result = worker.execute(run, workspace)
     assert result.status == "succeeded"
     assert result.exit_code == 0
@@ -333,7 +344,7 @@ def test_worker_times_out_and_caps_output(tmp_path) -> None:
         workflow_type=WorkflowType.TEST_GENERATION,
         ref="feature/tests",
         requested_by="maintainer@example.com",
-        status=WorkflowStatus.APPROVED,
+        status=WorkflowStatus.CLAIMED,
         created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
     )
     worker = LocalWorker(timeout_seconds=1, max_output_bytes=8)

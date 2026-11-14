@@ -18,6 +18,7 @@ class WorkflowStatus(StrEnum):
     QUEUED = "queued"
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
+    CLAIMED = "claimed"
 
 
 class RepositoryCreate(BaseModel):
@@ -46,6 +47,10 @@ class WorkflowRun(WorkflowRunCreate):
 
 class WorkflowApproval(BaseModel):
     approved_by: str = Field(min_length=1, max_length=255)
+
+
+class WorkerClaim(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=255)
 
 
 class PolicyDecision(BaseModel):
@@ -86,6 +91,7 @@ class InMemoryStore:
         self.audit_events: list[AuditEvent] = []
         self.github_deliveries: set[str] = set()
         self.worker_results: dict[UUID, WorkerResult] = {}
+        self.worker_claims: dict[UUID, str] = {}
 
     def record_event(
         self,
@@ -188,6 +194,23 @@ class InMemoryStore:
         )
         return run
 
+    def claim_run(self, run_id: UUID, *, worker_id: str, correlation_id: UUID) -> WorkflowRun | None:
+        run = self.runs.get(run_id)
+        if run is None or run.status is not WorkflowStatus.APPROVED or run_id in self.worker_claims:
+            return None
+        self.worker_claims[run_id] = worker_id
+        run.status = WorkflowStatus.CLAIMED
+        self.record_event(
+            action="workflow_run.claimed",
+            resource_type="workflow_run",
+            resource_id=run_id,
+            actor_id=worker_id,
+            correlation_id=correlation_id,
+            metadata={"worker_id": worker_id, "status": run.status.value},
+        )
+        return run
+
+
     def record_worker_result(self, result: WorkerResult, *, correlation_id: UUID) -> WorkerResult:
         if result.run_id in self.worker_results:
             return self.worker_results[result.run_id]
@@ -232,6 +255,7 @@ class InMemoryStore:
         self.audit_events.clear()
         self.github_deliveries.clear()
         self.worker_results.clear()
+        self.worker_claims.clear()
 
 
 class SQLiteStore(InMemoryStore):
@@ -270,6 +294,9 @@ class SQLiteStore(InMemoryStore):
                 stdout TEXT NOT NULL, stderr TEXT NOT NULL, timed_out INTEGER NOT NULL,
                 output_truncated INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS worker_claims (
+                run_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL
+            );
             """
         )
         self.connection.commit()
@@ -300,6 +327,8 @@ class SQLiteStore(InMemoryStore):
         self.github_deliveries = {
             row["delivery_id"] for row in self.connection.execute("SELECT delivery_id FROM github_deliveries")
         }
+        for row in self.connection.execute("SELECT run_id, worker_id FROM worker_claims"):
+            self.worker_claims[UUID(row["run_id"])] = row["worker_id"]
         for row in self.connection.execute("SELECT * FROM worker_results"):
             self.worker_results[UUID(row["run_id"])] = WorkerResult(
                 run_id=UUID(row["run_id"]), status=row["status"], exit_code=row["exit_code"],
@@ -338,6 +367,18 @@ class SQLiteStore(InMemoryStore):
             self.connection.commit()
         return run
 
+    def claim_run(self, run_id: UUID, *, worker_id: str, correlation_id: UUID) -> WorkflowRun | None:
+        run = super().claim_run(run_id, worker_id=worker_id, correlation_id=correlation_id)
+        if run:
+            self.connection.execute(
+                "INSERT OR IGNORE INTO worker_claims VALUES (?, ?)", (str(run_id), worker_id)
+            )
+            self.connection.execute(
+                "UPDATE workflow_runs SET status = ? WHERE id = ?", (run.status.value, str(run_id))
+            )
+            self.connection.commit()
+        return run
+
     def approve_run(self, run_id: UUID, *, actor_id: str, correlation_id: UUID) -> WorkflowRun | None:
         run = super().approve_run(run_id, actor_id=actor_id, correlation_id=correlation_id)
         if run:
@@ -367,7 +408,7 @@ class SQLiteStore(InMemoryStore):
     def reset(self) -> None:
         super().reset()
         self.connection.executescript(
-            "DELETE FROM repositories; DELETE FROM workflow_runs; DELETE FROM audit_events; DELETE FROM github_deliveries; DELETE FROM worker_results;"
+            "DELETE FROM repositories; DELETE FROM workflow_runs; DELETE FROM audit_events; DELETE FROM github_deliveries; DELETE FROM worker_results; DELETE FROM worker_claims;"
         )
         self.connection.commit()
 

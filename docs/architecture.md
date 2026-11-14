@@ -30,6 +30,7 @@ The current `0.1.0` implementation contains the control-plane process, repositor
 - [ ] GitHub App installation and signed webhook ingestion
 - [x] Fixed-profile local worker interface with approval and output limits
 - [x] Idempotent worker execution and result retrieval
+- [x] Single-worker claim gate before execution
 - [ ] Queue and isolated runner interfaces
 - [ ] Review and test-generation workflows with approval gates
 - [ ] Audit event export and operator dashboard

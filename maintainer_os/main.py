@@ -18,6 +18,7 @@ from .domain import (
     Repository,
     PolicyDecision,
     RepositoryCreate,
+    WorkerClaim,
     WorkflowApproval,
     WorkflowRun,
     WorkflowRunCreate,
@@ -27,6 +28,7 @@ from .domain import (
 
 class WorkerExecutionRequest(BaseModel):
     workspace_path: str
+    worker_id: str
 
 
 class HealthResponse(BaseModel):
@@ -145,6 +147,22 @@ async def approve_workflow_run(
 
 
 @app.post(
+    f"{settings.api_prefix}/workflow-runs/{{run_id}}/claim",
+    response_model=WorkflowRun,
+    tags=["workflow-runs"],
+)
+async def claim_workflow_run(
+    request: Request, run_id: UUID, payload: WorkerClaim
+) -> WorkflowRun:
+    run = store.claim_run(
+        run_id, worker_id=payload.worker_id, correlation_id=request.state.correlation_id
+    )
+    if run is None:
+        raise HTTPException(status_code=409, detail="Workflow run is missing, unapproved, or already claimed")
+    return run
+
+
+@app.post(
     f"{settings.api_prefix}/workflow-runs/{{run_id}}/execute",
     response_model=WorkerResult,
     tags=["workflow-runs"],
@@ -163,6 +181,8 @@ async def execute_workflow_run(
         raise HTTPException(status_code=400, detail="Workspace is outside the configured worker root") from error
     if run_id in store.worker_results:
         raise HTTPException(status_code=409, detail="Workflow run has already been executed")
+    if store.worker_claims.get(run_id) != payload.worker_id:
+        raise HTTPException(status_code=409, detail="Workflow run is not claimed by this worker")
     try:
         result = LocalWorker().execute(run, workspace)
     except WorkerError as error:

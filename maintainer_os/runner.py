@@ -32,8 +32,8 @@ class LocalWorker:
         self.max_output_bytes = max_output_bytes
 
     def execute(self, run: WorkflowRun, workspace: Path) -> WorkerResult:
-        if run.status is not WorkflowStatus.APPROVED:
-            raise WorkerError("workflow run must be approved before execution")
+        if run.status is not WorkflowStatus.CLAIMED:
+            raise WorkerError("workflow run must be claimed before execution")
         workspace = workspace.resolve()
         if not workspace.is_dir():
             raise WorkerError("workspace must be an existing directory")
