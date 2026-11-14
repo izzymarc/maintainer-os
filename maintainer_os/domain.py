@@ -189,6 +189,8 @@ class InMemoryStore:
         return run
 
     def record_worker_result(self, result: WorkerResult, *, correlation_id: UUID) -> WorkerResult:
+        if result.run_id in self.worker_results:
+            return self.worker_results[result.run_id]
         self.worker_results[result.run_id] = result
         self.record_event(
             action="workflow_run.executed",
@@ -263,6 +265,11 @@ class SQLiteStore(InMemoryStore):
             CREATE TABLE IF NOT EXISTS github_deliveries (
                 delivery_id TEXT PRIMARY KEY
             );
+            CREATE TABLE IF NOT EXISTS worker_results (
+                run_id TEXT PRIMARY KEY, status TEXT NOT NULL, exit_code INTEGER,
+                stdout TEXT NOT NULL, stderr TEXT NOT NULL, timed_out INTEGER NOT NULL,
+                output_truncated INTEGER NOT NULL
+            );
             """
         )
         self.connection.commit()
@@ -293,6 +300,12 @@ class SQLiteStore(InMemoryStore):
         self.github_deliveries = {
             row["delivery_id"] for row in self.connection.execute("SELECT delivery_id FROM github_deliveries")
         }
+        for row in self.connection.execute("SELECT * FROM worker_results"):
+            self.worker_results[UUID(row["run_id"])] = WorkerResult(
+                run_id=UUID(row["run_id"]), status=row["status"], exit_code=row["exit_code"],
+                stdout=row["stdout"], stderr=row["stderr"], timed_out=bool(row["timed_out"]),
+                output_truncated=bool(row["output_truncated"]),
+            )
 
     def record_event(self, **kwargs):
         event = super().record_event(**kwargs)
@@ -332,6 +345,16 @@ class SQLiteStore(InMemoryStore):
             self.connection.commit()
         return run
 
+    def record_worker_result(self, result: WorkerResult, *, correlation_id: UUID) -> WorkerResult:
+        result = super().record_worker_result(result, correlation_id=correlation_id)
+        self.connection.execute(
+            "INSERT OR IGNORE INTO worker_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (str(result.run_id), result.status, result.exit_code, result.stdout, result.stderr,
+             int(result.timed_out), int(result.output_truncated)),
+        )
+        self.connection.commit()
+        return result
+
     def accept_github_delivery(self, *, delivery_id: str, event_name: str, correlation_id: UUID) -> AuditEvent | None:
         event = super().accept_github_delivery(
             delivery_id=delivery_id, event_name=event_name, correlation_id=correlation_id
@@ -344,7 +367,7 @@ class SQLiteStore(InMemoryStore):
     def reset(self) -> None:
         super().reset()
         self.connection.executescript(
-            "DELETE FROM repositories; DELETE FROM workflow_runs; DELETE FROM audit_events; DELETE FROM github_deliveries;"
+            "DELETE FROM repositories; DELETE FROM workflow_runs; DELETE FROM audit_events; DELETE FROM github_deliveries; DELETE FROM worker_results;"
         )
         self.connection.commit()
 

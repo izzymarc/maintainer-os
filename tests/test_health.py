@@ -213,7 +213,6 @@ async def test_github_webhook_rejects_invalid_signature(client: httpx.AsyncClien
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_execution_requires_approval_and_records_result(
     client: httpx.AsyncClient, tmp_path, monkeypatch
 ) -> None:
@@ -259,6 +258,14 @@ async def test_execution_requires_approval_and_records_result(
     )
     assert executed.status_code == 200
     assert executed.json()["status"] == "succeeded"
+    fetched = await client.get(f"/api/v1/workflow-runs/{run['id']}/result")
+    assert fetched.status_code == 200
+    assert fetched.json()["run_id"] == run["id"]
+    duplicate = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/execute",
+        json={"workspace_path": str(workspace)},
+    )
+    assert duplicate.status_code == 409
     events = (await client.get("/api/v1/audit-events")).json()
     assert events[-1]["action"] == "workflow_run.executed"
     assert events[-1]["metadata"]["status"] == "succeeded"

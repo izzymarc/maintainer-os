@@ -161,11 +161,25 @@ async def execute_workflow_run(
         workspace.relative_to(root)
     except ValueError as error:
         raise HTTPException(status_code=400, detail="Workspace is outside the configured worker root") from error
+    if run_id in store.worker_results:
+        raise HTTPException(status_code=409, detail="Workflow run has already been executed")
     try:
         result = LocalWorker().execute(run, workspace)
     except WorkerError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return store.record_worker_result(result, correlation_id=request.state.correlation_id)
+
+
+@app.get(
+    f"{settings.api_prefix}/workflow-runs/{{run_id}}/result",
+    response_model=WorkerResult,
+    tags=["workflow-runs"],
+)
+async def get_workflow_result(run_id: UUID) -> WorkerResult:
+    result = store.worker_results.get(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workflow result not found")
+    return result
 
 
 @app.get(
