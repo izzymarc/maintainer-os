@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+from pathlib import Path
 
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from .config import settings
+from .runner import LocalWorker, WorkerError
 from .domain import (
     AuditEvent,
     InMemoryStore,
@@ -19,7 +21,12 @@ from .domain import (
     WorkflowApproval,
     WorkflowRun,
     WorkflowRunCreate,
+    WorkerResult,
 )
+
+
+class WorkerExecutionRequest(BaseModel):
+    workspace_path: str
 
 
 class HealthResponse(BaseModel):
@@ -135,6 +142,30 @@ async def approve_workflow_run(
     if run is None:
         raise HTTPException(status_code=409, detail="Workflow run is missing or not approvable")
     return run
+
+
+@app.post(
+    f"{settings.api_prefix}/workflow-runs/{{run_id}}/execute",
+    response_model=WorkerResult,
+    tags=["workflow-runs"],
+)
+async def execute_workflow_run(
+    request: Request, run_id: UUID, payload: WorkerExecutionRequest
+) -> WorkerResult:
+    run = store.runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    root = Path(settings.worker_workspace_root).resolve()
+    workspace = Path(payload.workspace_path).resolve()
+    try:
+        workspace.relative_to(root)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Workspace is outside the configured worker root") from error
+    try:
+        result = LocalWorker().execute(run, workspace)
+    except WorkerError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return store.record_worker_result(result, correlation_id=request.state.correlation_id)
 
 
 @app.get(

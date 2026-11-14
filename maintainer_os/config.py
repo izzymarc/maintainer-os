@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     github_webhook_secret: str = "development-only-change-me"
     storage: str = "memory"
     sqlite_path: str = "maintainer_os.db"
+    worker_workspace_root: str = "/tmp/maintainer-os-workspaces"
     model_config = SettingsConfigDict(env_file=".env", env_prefix="MAINTAINEROS_")
 
 

@@ -213,6 +213,65 @@ async def test_github_webhook_rejects_invalid_signature(client: httpx.AsyncClien
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_execution_requires_approval_and_records_result(
+    client: httpx.AsyncClient, tmp_path, monkeypatch
+) -> None:
+    from pathlib import Path
+
+    monkeypatch.setattr(settings, "worker_workspace_root", str(tmp_path))
+    workspace = tmp_path / "approved-workspace"
+    workspace.mkdir()
+    repository = (
+        await client.post(
+            "/api/v1/repositories",
+            json={
+                "full_name": "izzymarc/worker-api",
+                "clone_url": "https://github.com/izzymarc/worker-api.git",
+            },
+        )
+    ).json()
+    run = (
+        await client.post(
+            "/api/v1/workflow-runs",
+            json={
+                "repository_id": repository["id"],
+                "workflow_type": "review",
+                "ref": "feature/worker",
+                "requested_by": "maintainer@example.com",
+            },
+        )
+    ).json()
+    rejected = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/execute",
+        json={"workspace_path": str(workspace)},
+    )
+    assert rejected.status_code == 409
+
+    approved = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/approve",
+        json={"approved_by": "reviewer@example.com"},
+    )
+    assert approved.status_code == 200
+    executed = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/execute",
+        json={"workspace_path": str(workspace)},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "succeeded"
+    events = (await client.get("/api/v1/audit-events")).json()
+    assert events[-1]["action"] == "workflow_run.executed"
+    assert events[-1]["metadata"]["status"] == "succeeded"
+    assert "stdout" not in events[-1]["metadata"]
+
+    outside = await client.post(
+        f"/api/v1/workflow-runs/{run['id']}/execute",
+        json={"workspace_path": str(Path(tmp_path).parent)},
+    )
+    assert outside.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_workflow_run_requires_existing_repository(client: httpx.AsyncClient) -> None:
     response = await client.post(
         "/api/v1/workflow-runs",

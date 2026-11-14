@@ -85,6 +85,7 @@ class InMemoryStore:
         self.runs: dict[UUID, WorkflowRun] = {}
         self.audit_events: list[AuditEvent] = []
         self.github_deliveries: set[str] = set()
+        self.worker_results: dict[UUID, WorkerResult] = {}
 
     def record_event(
         self,
@@ -187,6 +188,23 @@ class InMemoryStore:
         )
         return run
 
+    def record_worker_result(self, result: WorkerResult, *, correlation_id: UUID) -> WorkerResult:
+        self.worker_results[result.run_id] = result
+        self.record_event(
+            action="workflow_run.executed",
+            resource_type="workflow_run",
+            resource_id=result.run_id,
+            actor_id="worker",
+            correlation_id=correlation_id,
+            metadata={
+                "status": result.status,
+                "exit_code": str(result.exit_code) if result.exit_code is not None else "",
+                "timed_out": str(result.timed_out).lower(),
+                "output_truncated": str(result.output_truncated).lower(),
+            },
+        )
+        return result
+
     def accept_github_delivery(
         self,
         *,
@@ -211,6 +229,7 @@ class InMemoryStore:
         self.runs.clear()
         self.audit_events.clear()
         self.github_deliveries.clear()
+        self.worker_results.clear()
 
 
 class SQLiteStore(InMemoryStore):
