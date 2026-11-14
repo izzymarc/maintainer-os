@@ -219,7 +219,6 @@ class InMemoryStore:
             expires_at=now_utc() + timedelta(seconds=lease_seconds),
         )
         run.status = WorkflowStatus.CLAIMED
-        run.status = WorkflowStatus.CLAIMED
         self.record_event(
             action="workflow_run.claimed",
             resource_type="workflow_run",
@@ -331,7 +330,7 @@ class SQLiteStore(InMemoryStore):
                 output_truncated INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS worker_claims (
-                run_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL
+                run_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, expires_at TEXT NOT NULL
             );
             """
         )
@@ -363,8 +362,13 @@ class SQLiteStore(InMemoryStore):
         self.github_deliveries = {
             row["delivery_id"] for row in self.connection.execute("SELECT delivery_id FROM github_deliveries")
         }
-        for row in self.connection.execute("SELECT run_id, worker_id FROM worker_claims"):
-            self.worker_claims[UUID(row["run_id"])] = row["worker_id"]
+        for row in self.connection.execute("SELECT run_id, worker_id, expires_at FROM worker_claims"):
+            run_id = UUID(row["run_id"])
+            self.worker_claims[run_id] = WorkerLease(
+                run_id=run_id,
+                worker_id=row["worker_id"],
+                expires_at=datetime.fromisoformat(row["expires_at"]),
+            )
         for row in self.connection.execute("SELECT * FROM worker_results"):
             self.worker_results[UUID(row["run_id"])] = WorkerResult(
                 run_id=UUID(row["run_id"]), status=row["status"], exit_code=row["exit_code"],
@@ -403,17 +407,35 @@ class SQLiteStore(InMemoryStore):
             self.connection.commit()
         return run
 
-    def claim_run(self, run_id: UUID, *, worker_id: str, correlation_id: UUID) -> WorkflowRun | None:
-        run = super().claim_run(run_id, worker_id=worker_id, correlation_id=correlation_id)
+    def claim_run(
+        self, run_id: UUID, *, worker_id: str, lease_seconds: int, correlation_id: UUID
+    ) -> WorkflowRun | None:
+        run = super().claim_run(
+            run_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            correlation_id=correlation_id,
+        )
         if run:
             self.connection.execute(
-                "INSERT OR IGNORE INTO worker_claims VALUES (?, ?)", (str(run_id), worker_id)
+                "INSERT OR REPLACE INTO worker_claims VALUES (?, ?, ?)",
+                (str(run_id), worker_id, self.worker_claims[run_id].expires_at.isoformat()),
             )
             self.connection.execute(
                 "UPDATE workflow_runs SET status = ? WHERE id = ?", (run.status.value, str(run_id))
             )
             self.connection.commit()
         return run
+
+    def renew_claim(self, run_id: UUID, *, worker_id: str, lease_seconds: int) -> WorkerLease | None:
+        lease = super().renew_claim(run_id, worker_id=worker_id, lease_seconds=lease_seconds)
+        if lease:
+            self.connection.execute(
+                "UPDATE worker_claims SET expires_at = ? WHERE run_id = ?",
+                (lease.expires_at.isoformat(), str(run_id)),
+            )
+            self.connection.commit()
+        return lease
 
     def approve_run(self, run_id: UUID, *, actor_id: str, correlation_id: UUID) -> WorkflowRun | None:
         run = super().approve_run(run_id, actor_id=actor_id, correlation_id=correlation_id)

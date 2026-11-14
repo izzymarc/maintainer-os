@@ -384,6 +384,43 @@ def test_sqlite_store_survives_restart(tmp_path) -> None:
     second.close()
 
 
+
+
+def test_sqlite_claim_survives_restart(tmp_path) -> None:
+    from uuid import uuid4
+
+    from maintainer_os.domain import RepositoryCreate, SQLiteStore, WorkflowRunCreate
+
+    database_path = tmp_path / "claims.db"
+    first = SQLiteStore(str(database_path))
+    repository = first.add_repository(
+        RepositoryCreate(
+            full_name="izzymarc/claim-example",
+            clone_url="https://github.com/izzymarc/claim-example.git",
+        ),
+        correlation_id=uuid4(),
+    )
+    run = first.add_run(
+        WorkflowRunCreate(
+            repository_id=repository.id,
+            workflow_type="review",
+            ref="feature/claim",
+            requested_by="maintainer@example.com",
+        ),
+        correlation_id=uuid4(),
+    )
+    assert run is not None
+    first.approve_run(run.id, actor_id="reviewer", correlation_id=uuid4())
+    first.claim_run(run.id, worker_id="worker-a", lease_seconds=60, correlation_id=uuid4())
+    first.close()
+
+    second = SQLiteStore(str(database_path))
+    lease = second.active_claim(run.id)
+    assert lease is not None
+    assert lease.worker_id == "worker-a"
+    assert second.runs[run.id].status.value == "claimed"
+    second.close()
+
 def test_expired_worker_lease_can_be_reclaimed() -> None:
     from datetime import timedelta
     from uuid import uuid4
